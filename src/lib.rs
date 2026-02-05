@@ -2,16 +2,12 @@
 pub mod data_type;
 pub mod value;
 
-// Schema definitions
 pub mod schema;
 
-// Storage layer
 pub mod storage;
 
-// B+ tree implementation
 pub mod btree;
 
-// Row representation
 pub mod row;
 
 // Database engine

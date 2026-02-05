@@ -1,17 +1,20 @@
 use std::collections::HashMap;
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::io;
-use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use crate::btree::{InternalNode, LeafNode, NODE_INTERNAL, NODE_LEAF};
 use crate::row::Row;
 use crate::schema::{Column, TableSchema};
-use crate::storage::{FileHeader, PAGE_SIZE};
+use crate::storage::{FileHeader, PageCache, PageManager, Page, PAGE_SIZE};
 use crate::value::Value;
 
+/// Default page cache size (number of pages)
+const DEFAULT_CACHE_SIZE: usize = 256;
+
 pub struct Database {
-    file: File,
+    page_manager: PageManager,
+    cache: PageCache,
     header: FileHeader,
     schemas: HashMap<String, TableSchema>,
 }
@@ -19,7 +22,7 @@ pub struct Database {
 impl Database {
     /// Create a new database file
     pub fn create(path: impl AsRef<Path>) -> io::Result<Self> {
-        let mut file = OpenOptions::new()
+        let file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
@@ -27,11 +30,17 @@ impl Database {
             .open(path)?;
 
         let header = FileHeader::new();
-        file.write_all(&header.serialize())?;
-        file.sync_all()?;
+        let mut page_manager = PageManager::new(file, 1);
+
+        // Write the header page
+        let mut header_page = Page::new(0);
+        header_page.as_bytes_mut().copy_from_slice(&header.serialize());
+        page_manager.write_page(&header_page)?;
+        page_manager.sync()?;
 
         Ok(Self {
-            file,
+            page_manager,
+            cache: PageCache::new(DEFAULT_CACHE_SIZE),
             header,
             schemas: HashMap::new(),
         })
@@ -39,17 +48,29 @@ impl Database {
 
     /// Open an existing database file
     pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
-        let mut file = OpenOptions::new()
+        let path = path.as_ref();
+        let file = OpenOptions::new()
             .read(true)
             .write(true)
             .open(path)?;
 
-        let mut header_buf = vec![0u8; PAGE_SIZE];
-        file.read_exact(&mut header_buf)?;
-        let header = FileHeader::deserialize(&header_buf)?;
+        // We don't know total_pages yet, use a temporary large value
+        let mut page_manager = PageManager::new(file, u64::MAX);
+
+        // Read header
+        let header_page = page_manager.read_page(0)?;
+        let header = FileHeader::deserialize(header_page.as_bytes())?;
+
+        // Now create the real page manager with correct total_pages
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)?;
+        let page_manager = PageManager::new(file, header.total_pages);
 
         let mut db = Self {
-            file,
+            page_manager,
+            cache: PageCache::new(DEFAULT_CACHE_SIZE),
             header,
             schemas: HashMap::new(),
         };
@@ -60,22 +81,48 @@ impl Database {
         Ok(db)
     }
 
+    /// Create with a custom cache size
+    pub fn with_cache_size(mut self, size: usize) -> Self {
+        self.cache = PageCache::new(size);
+        self
+    }
+
     // -------------------------------------------------------------------------
-    // Page Management
+    // Page Management (now using PageManager and PageCache)
     // -------------------------------------------------------------------------
 
     fn read_page(&mut self, page_num: u64) -> io::Result<Vec<u8>> {
-        let offset = page_num * PAGE_SIZE as u64;
-        self.file.seek(SeekFrom::Start(offset))?;
-        let mut buf = vec![0u8; PAGE_SIZE];
-        self.file.read_exact(&mut buf)?;
-        Ok(buf)
+        // Check cache first
+        if let Some(page) = self.cache.get(page_num) {
+            return Ok(page.as_bytes().to_vec());
+        }
+
+        // Read from disk
+        let page = self.page_manager.read_page(page_num)?;
+        let data = page.as_bytes().to_vec();
+
+        // Add to cache, flush evicted page if dirty
+        if let Some(evicted) = self.cache.insert(page) {
+            if evicted.dirty {
+                self.page_manager.write_page(&evicted)?;
+            }
+        }
+
+        Ok(data)
     }
 
     fn write_page(&mut self, page_num: u64, data: &[u8]) -> io::Result<()> {
-        let offset = page_num * PAGE_SIZE as u64;
-        self.file.seek(SeekFrom::Start(offset))?;
-        self.file.write_all(data)?;
+        // Create page and mark as dirty
+        let mut page = Page::from_data(page_num, data.to_vec());
+        page.mark_dirty();
+
+        // Insert into cache
+        if let Some(evicted) = self.cache.insert(page) {
+            if evicted.dirty {
+                self.page_manager.write_page(&evicted)?;
+            }
+        }
+
         Ok(())
     }
 
@@ -88,14 +135,31 @@ impl Database {
         let empty = vec![0u8; PAGE_SIZE];
         self.write_page(page_num, &empty)?;
 
-        // Update header
-        self.write_page(0, &self.header.serialize())?;
+        // Update header on disk
+        self.flush_header()?;
 
         Ok(page_num)
     }
 
     fn flush_header(&mut self) -> io::Result<()> {
-        self.write_page(0, &self.header.serialize())
+        let header_data = self.header.serialize();
+        // Write header directly to disk (bypass cache for header)
+        let mut header_page = Page::from_data(0, header_data);
+        header_page.mark_dirty();
+        self.page_manager.write_page(&header_page)
+    }
+
+    /// Flush all dirty pages to disk
+    fn flush_cache(&mut self) -> io::Result<()> {
+        // Collect dirty pages to avoid borrow issues
+        let dirty_pages: Vec<Page> = self.cache.dirty_pages().cloned().collect();
+
+        for page in dirty_pages {
+            self.page_manager.write_page(&page)?;
+        }
+
+        self.cache.clear_dirty_flags();
+        Ok(())
     }
 
     // -------------------------------------------------------------------------
@@ -702,6 +766,14 @@ impl Database {
 
     /// Flush all pending writes to disk
     pub fn sync(&mut self) -> io::Result<()> {
-        self.file.sync_all()
+        self.flush_cache()?;
+        self.page_manager.sync()
+    }
+}
+
+impl Drop for Database {
+    fn drop(&mut self) {
+        // Best effort flush on drop
+        let _ = self.sync();
     }
 }
