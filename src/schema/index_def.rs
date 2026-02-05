@@ -8,6 +8,15 @@ pub struct IndexDef {
 }
 
 impl IndexDef {
+    pub fn new(name: impl Into<String>, columns: Vec<String>, unique: bool) -> Self {
+        Self {
+            name: name.into(),
+            columns,
+            unique,
+            root_page: 0, // Will be set when index is created
+        }
+    }
+
     pub(crate) fn serialize(&self, buf: &mut Vec<u8>) {
         // Name
         let name_bytes = self.name.as_bytes();
