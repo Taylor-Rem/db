@@ -1,5 +1,7 @@
 use std::io;
-use crate::{ value::Value, table_schema::TableSchema };
+use crate::value::Value;
+use crate::schema::table_schema::TableSchema;
+
 #[derive(Debug, Clone)]
 pub struct Row {
     pub values: Vec<Value>,
@@ -28,7 +30,7 @@ impl Row {
         buf.extend_from_slice(&null_bitmap);
 
         // Serialize non-null values
-        for (i, v) in self.values.iter().enumerate() {
+        for v in self.values.iter() {
             if !matches!(v, Value::Null) {
                 v.serialize(&mut buf);
             }

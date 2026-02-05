@@ -1,5 +1,5 @@
 use std::io;
-use crate::file_header::PAGE_SIZE;
+use crate::storage::file_header::PAGE_SIZE;
 pub(crate) const NODE_LEAF: u8 = 0x02;
 #[derive(Debug)]
 pub(crate) struct LeafNode {

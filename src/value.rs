@@ -1,5 +1,6 @@
 use std::io;
-use crate::DataType;
+pub use crate::data_type::DataType;
+
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
