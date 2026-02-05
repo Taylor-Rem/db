@@ -1,11 +1,25 @@
+// Core types
 pub mod data_type;
 pub mod value;
-mod column;
-mod index_def;
-mod table_schema;
+
+// Schema definitions
+pub mod schema;
+
+// Storage layer
+pub mod storage;
+
+// B+ tree implementation
+pub mod btree;
+
+// Row representation
 pub mod row;
-mod internal_node;
-mod leaf_node;
-pub mod file_header;
-pub mod table_builder;
+
+// Database engine
 pub mod database;
+
+// Re-exports for convenience
+pub use data_type::DataType;
+pub use value::Value;
+pub use row::Row;
+pub use database::Database;
+pub use schema::{Column, TableSchema, TableBuilder, IndexDef};

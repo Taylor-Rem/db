@@ -1,4 +1,8 @@
-use crate::{ table_schema::TableSchema, data_type::DataType, column::Column, value::Value };
+use crate::data_type::DataType;
+use crate::value::Value;
+use super::column::Column;
+use super::table_schema::TableSchema;
+
 pub struct TableBuilder {
     schema: TableSchema,
 }

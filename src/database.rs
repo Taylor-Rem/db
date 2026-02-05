@@ -4,12 +4,10 @@ use std::io;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
-use crate::column::Column;
-use crate::file_header::{FileHeader, PAGE_SIZE};
-use crate::internal_node::{InternalNode, NODE_INTERNAL};
-use crate::leaf_node::{LeafNode, NODE_LEAF};
+use crate::btree::{InternalNode, LeafNode, NODE_INTERNAL, NODE_LEAF};
 use crate::row::Row;
-use crate::table_schema::TableSchema;
+use crate::schema::{Column, TableSchema};
+use crate::storage::{FileHeader, PAGE_SIZE};
 use crate::value::Value;
 
 pub struct Database {

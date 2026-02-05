@@ -1,5 +1,6 @@
 use std::io;
-use crate::{ column::Column, index_def::IndexDef };
+use super::column::Column;
+use super::index_def::IndexDef;
 #[derive(Debug, Clone)]
 pub struct TableSchema {
     pub name: String,
