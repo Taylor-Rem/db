@@ -5,11 +5,11 @@ use super::index_def::IndexDef;
 pub struct TableSchema {
     pub name: String,
     pub columns: Vec<Column>,
-    pub primary_key: Vec<String>, // Column names that form the PK
+    pub primary_key: Vec<String>,
     pub indexes: Vec<IndexDef>,
-    pub root_page: u64,           // Root page of the primary B+ tree
+    pub root_page: u64,
     pub row_count: u64,
-    pub auto_increment: u64,      // For auto-increment PKs
+    pub auto_increment: u64,
 }
 
 impl TableSchema {
@@ -41,6 +41,15 @@ impl TableSchema {
 
     pub fn get_column_index(&self, name: &str) -> Option<usize> {
         self.columns.iter().position(|c| c.name == name)
+    }
+
+    pub fn index(mut self, idx: IndexDef) -> Self {
+        self.indexes.push(idx);
+        self
+    }
+
+    pub fn get_index(&self, name: &str) -> Option<&IndexDef> {
+        self.indexes.iter().find(|idx| idx.name == name)
     }
 
     pub(crate) fn serialize(&self, buf: &mut Vec<u8>) {

@@ -29,6 +29,12 @@ impl TableBuilder {
         self
     }
 
+    // NEW: Add auto-increment column
+    pub fn column_auto_increment(mut self, name: impl Into<String>, dtype: DataType) -> Self {
+        self.schema.columns.push(Column::new(name, dtype).auto_increment());
+        self
+    }
+
     pub fn primary_key(mut self, columns: &[&str]) -> Self {
         self.schema.primary_key = columns.iter().map(|s| s.to_string()).collect();
         self

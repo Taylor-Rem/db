@@ -1,11 +1,13 @@
 use std::io;
 use crate::{data_type::DataType, value::Value};
+
 #[derive(Debug, Clone)]
 pub struct Column {
     pub name: String,
     pub data_type: DataType,
     pub nullable: bool,
     pub default: Option<Value>,
+    pub auto_increment: bool,  // NEW: Auto-increment flag
 }
 
 impl Column {
@@ -15,6 +17,7 @@ impl Column {
             data_type,
             nullable: true,
             default: None,
+            auto_increment: false,  // NEW: Default to false
         }
     }
 
@@ -28,6 +31,13 @@ impl Column {
         self
     }
 
+    // NEW: Builder method for auto-increment
+    pub fn auto_increment(mut self) -> Self {
+        self.auto_increment = true;
+        self.nullable = false;  // Auto-increment columns can't be null
+        self
+    }
+
     pub(crate) fn serialize(&self, buf: &mut Vec<u8>) {
         // Name: length-prefixed string
         let name_bytes = self.name.as_bytes();
@@ -35,8 +45,10 @@ impl Column {
         buf.extend_from_slice(name_bytes);
         // Type
         buf.push(self.data_type as u8);
-        // Flags: bit 0 = nullable
-        buf.push(if self.nullable { 1 } else { 0 });
+        // Flags: bit 0 = nullable, bit 1 = auto_increment (NEW)
+        let flags = (if self.nullable { 1 } else { 0 })
+            | (if self.auto_increment { 2 } else { 0 });
+        buf.push(flags);
         // Default: has_default byte + serialized value
         match &self.default {
             Some(v) => {
@@ -58,7 +70,10 @@ impl Column {
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "unknown data type"))?;
         *offset += 1;
 
-        let nullable = data[*offset] != 0;
+        // NEW: Parse flags
+        let flags = data[*offset];
+        let nullable = (flags & 1) != 0;
+        let auto_increment = (flags & 2) != 0;
         *offset += 1;
 
         let has_default = data[*offset] != 0;
@@ -75,6 +90,7 @@ impl Column {
             data_type,
             nullable,
             default,
+            auto_increment,
         })
     }
 }
