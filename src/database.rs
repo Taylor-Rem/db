@@ -20,6 +20,31 @@ pub struct Database {
     schemas: HashMap<String, TableSchema>,
 }
 
+#[derive(Debug, Clone)]
+pub struct JoinedRow {
+    /// Values from the left table
+    pub left: Row,
+    /// Values from the right table
+    pub right: Row,
+    /// For convenience: flattened values in order [left..., right...]
+    pub all_values: Vec<Value>,
+}
+
+impl JoinedRow {
+    fn new(left: Row, right: Row) -> Self {
+        let mut all_values = left.values.clone();
+        all_values.extend(right.values.clone());
+        Self { left, right, all_values }
+    }
+}
+
+/// Type of join to perform
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JoinType {
+    Inner,
+    LeftOuter,
+}
+
 impl Database {
     /// Create a new database file
     pub fn create(path: impl AsRef<Path>) -> io::Result<Self> {
@@ -314,6 +339,18 @@ impl Database {
 
                     // Generate value based on column type
                     row.values[i] = match column.data_type {
+                        DataType::UInt32 => {
+                            if next_id > u32::MAX as u64 {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::InvalidInput,
+                                    "auto_increment value exceeds UInt32 range"
+                                ));
+                            }
+                            Value::UInt32(next_id as u32)
+                        }
+                        DataType::UInt64 => {
+                            Value::UInt64(next_id as u64)
+                        }
                         DataType::Int32 => {
                             if next_id > i32::MAX as u64 {
                                 return Err(io::Error::new(
@@ -661,6 +698,139 @@ impl Database {
         key.extend_from_slice(&pk_key);
 
         Ok(key)
+    }
+
+    pub fn index_nested_loop_join(
+        &mut self,
+        left_table: &str,
+        right_table: &str,
+        left_col: &str,
+        right_col: &str,
+        right_index: &str,
+        join_type: JoinType,
+    ) -> io::Result<Vec<JoinedRow>> {
+        // Validate schemas
+        let left_schema = self.schemas.get(left_table)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound,
+                                          format!("left table '{}' not found", left_table)))?
+            .clone();
+
+        let right_schema = self.schemas.get(right_table)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound,
+                                          format!("right table '{}' not found", right_table)))?
+            .clone();
+
+        // Validate columns exist
+        let left_col_idx = left_schema.get_column_index(left_col)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput,
+                                          format!("column '{}' not found in table '{}'", left_col, left_table)))?;
+
+        let _right_col_idx = right_schema.get_column_index(right_col)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput,
+                                          format!("column '{}' not found in table '{}'", right_col, right_table)))?;
+
+        // Validate index exists on right table
+        if right_schema.get_index(right_index).is_none() {
+            return Err(io::Error::new(io::ErrorKind::NotFound,
+                                      format!("index '{}' not found on table '{}'", right_index, right_table)));
+        }
+
+        // Scan the left (outer) table
+        let left_rows = self.scan(left_table)?;
+        let mut results = Vec::new();
+
+        // For each row in the left table
+        for left_row in left_rows {
+            let join_value = &left_row.values[left_col_idx];
+
+            // Use the index to find matching rows in the right table
+            let right_matches = self.find_by_index(
+                right_table,
+                right_index,
+                &[join_value.clone()],
+            )?;
+
+            if right_matches.is_empty() {
+                // No matches found
+                match join_type {
+                    JoinType::Inner => {
+                        // Skip this left row for inner joins
+                        continue;
+                    }
+                    JoinType::LeftOuter => {
+                        // Include left row with NULLs for right side
+                        let null_right = Row::new(
+                            vec![Value::Null; right_schema.columns.len()]
+                        );
+                        results.push(JoinedRow::new(left_row.clone(), null_right));
+                    }
+                }
+            } else {
+                // Found matches - add all combinations
+                for right_row in right_matches {
+                    results.push(JoinedRow::new(left_row.clone(), right_row));
+                }
+            }
+        }
+
+        Ok(results)
+    }
+
+    /// Perform a simple nested loop join (no index required, but slower)
+    /// Useful when no index exists on the join column
+    pub fn nested_loop_join(
+        &mut self,
+        left_table: &str,
+        right_table: &str,
+        left_col: &str,
+        right_col: &str,
+        join_type: JoinType,
+    ) -> io::Result<Vec<JoinedRow>> {
+        let left_schema = self.schemas.get(left_table)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound,
+                                          format!("left table '{}' not found", left_table)))?
+            .clone();
+
+        let right_schema = self.schemas.get(right_table)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound,
+                                          format!("right table '{}' not found", right_table)))?
+            .clone();
+
+        let left_col_idx = left_schema.get_column_index(left_col)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput,
+                                          format!("column '{}' not found in table '{}'", left_col, left_table)))?;
+
+        let right_col_idx = right_schema.get_column_index(right_col)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput,
+                                          format!("column '{}' not found in table '{}'", right_col, right_table)))?;
+
+        let left_rows = self.scan(left_table)?;
+        let right_rows = self.scan(right_table)?;
+        let mut results = Vec::new();
+
+        for left_row in left_rows {
+            let left_value = &left_row.values[left_col_idx];
+            let mut found_match = false;
+
+            for right_row in &right_rows {
+                let right_value = &right_row.values[right_col_idx];
+
+                if left_value == right_value {
+                    results.push(JoinedRow::new(left_row.clone(), right_row.clone()));
+                    found_match = true;
+                }
+            }
+
+            // Handle left outer join with no matches
+            if !found_match && join_type == JoinType::LeftOuter {
+                let null_right = Row::new(
+                    vec![Value::Null; right_schema.columns.len()]
+                );
+                results.push(JoinedRow::new(left_row.clone(), null_right));
+            }
+        }
+
+        Ok(results)
     }
 
     /// Build index key prefix (without PK, for lookups)
